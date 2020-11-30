@@ -21,9 +21,10 @@
 #define DEBUG_FSM 0
 static int debug_level = MINIWEB_DEBUG_NONE;
 static int port_no = 80;
-static int max_sessions = 100;
 static int listen_socket = -1;
-static int timeout_secs = 5;   // Close sessions after 5 secs
+static int max_sessions = 50;      // Allow upto this many concurrent session (must be < 1000)
+static int timeout_secs = 5;        // Close sessions after 5 secs
+static int free_timeout_secs = 15;  // Close sessions after 5 secs
 
 // What headers we will take note of
 struct listen_header {
@@ -158,12 +159,12 @@ static int isValueChar(int c) {
    return c >= ' ' && c < 128;
 }
 /****************************************************************************************/
-int lock_url(void) {
+static int lock_url(void) {
    // For if I get around to multi-threading 
    return 1;
 }
 
-void unlock_url(void) {
+static void unlock_url(void) {
    // For if I get around to multi-threading 
 }
 
@@ -213,7 +214,7 @@ static int miniweb_log_error(int error_code) {
 }
 
 /****************************************************************************************/
-struct listen_header *header_find(char *data, int len) {
+static struct listen_header *header_find(char *data, int len) {
     struct listen_header *lh = first_listen_header;
     while(lh != NULL) {
        if(lh->len == len) {
@@ -233,7 +234,7 @@ struct listen_header *header_find(char *data, int len) {
     return NULL;
 }
 /****************************************************************************************/
-void session_update_metrics(struct miniweb_session *session) {
+static void session_update_metrics(struct miniweb_session *session) {
     struct timespec end_time;
     struct timespec duration;
     int time_us;
@@ -283,7 +284,7 @@ void session_update_metrics(struct miniweb_session *session) {
 }
 
 /****************************************************************************************/
-struct miniweb_session *session_new(int socket) {
+static struct miniweb_session *session_new(int socket) {
    struct miniweb_session *session;
    if(socket == -1)
        return NULL; 
@@ -368,7 +369,10 @@ static int session_request_header_add(struct miniweb_session *session,char *head
 }
 
 /****************************************************************************************/
-int safewrite(int socket, char *data, int len) {
+static int safewrite(int socket, char *data, int len) {
+    if(socket == -1) {
+       return 0;
+    }
     while(len > 0) {
         int n = write(socket, data, len);
         if(n >= 0) {
@@ -452,7 +456,7 @@ static int session_find_target_url(struct miniweb_session *session) {
 }
 
 /****************************************************************************************/
-void session_empty(struct miniweb_session *session) {
+static void session_empty(struct miniweb_session *session) {
     // Clean up method, full_url and protocol
     session->state = p_method;
     if(session->method) {
@@ -508,7 +512,7 @@ void session_empty(struct miniweb_session *session) {
 }
 
 /****************************************************************************************/
-void session_end(struct miniweb_session *session) {
+static void session_end(struct miniweb_session *session) {
     if(session->socket != -1) {
         while(close(session->socket) < 0 && errno == EINTR) {
             miniweb_log_error(MINIWEB_ERR_CLOSE);
@@ -574,7 +578,7 @@ static void session_send_reply(struct miniweb_session *session) {
         safewrite(session->socket, "\r\n",     2);
         rh = rh->next;
     }
-    write(session->socket, "\r\n",     2);
+    safewrite(session->socket, "\r\n",     2);
 
     // Send body 
     if(session->data)
@@ -624,9 +628,12 @@ int miniweb_register_page(char *method, char *url, void (*callback)(struct miniw
    } else {
       start++; // Skip the '*' before having the end pattern
       new_url->pattern_end = malloc(url_len-start+1);
+      if(new_url->pattern_end==NULL)
+         return miniweb_log_error(MINIWEB_ERR_NOMEM);
+
       if(url_len-start > 0) 
          memcpy(new_url->pattern_end, url+start, url_len-start);
-      new_url->pattern_start[url_len-start] = '\0';
+      new_url->pattern_end[url_len-start] = '\0';
       new_url->pattern_end_len = strlen(new_url->pattern_end);
    }
    
@@ -1037,15 +1044,28 @@ static int session_read(struct miniweb_session *session) {
     return 1;
 }
 
+/****************************************************************************************/
 int miniweb_set_port(int port) {
    port_no = port;
    return 1;
 }
+
 /****************************************************************************************/
 int miniweb_run(int timeout_ms) {
      static time_t listen_retry_time = 0;
      static time_t last_now = 0;
      time_t now = time(NULL);
+
+     // Remove and free any stale sessions at the start of the list
+     if(first_session != NULL && first_session->socket == -1) {
+         if(first_session->last_action + free_timeout_secs < now) {
+            struct miniweb_session *next = first_session->next;
+            session_empty(first_session);
+            free(first_session);
+            first_session = next;
+            session_count--;
+         }
+     }
 
      /* Open the listen socket, if need to */
      if(listen_socket < 0 && listen_retry_time <= now) {
@@ -1103,11 +1123,13 @@ int miniweb_run(int timeout_ms) {
 
      struct miniweb_session *s = first_session;
      while(s != NULL) {
-         FD_SET(s->socket, &rfds);
-         FD_SET(s->socket, &wfds);
-         FD_SET(s->socket, &efds);
-         if(max_fd < s->socket+1) 
-            max_fd = s->socket+1;
+         if(s->socket >= 0) {
+             FD_SET(s->socket, &rfds);
+             FD_SET(s->socket, &wfds);
+             FD_SET(s->socket, &efds);
+             if(max_fd < s->socket+1) 
+                max_fd = s->socket+1;
+         }
          s = s->next;
      } 
      tv.tv_sec  = (timeout_ms/1000);
@@ -1178,3 +1200,6 @@ int miniweb_run(int timeout_ms) {
      }
      return 0;
 }
+/****************************************************************************************/
+/*  End of file                                                                         */
+/****************************************************************************************/

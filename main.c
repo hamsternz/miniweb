@@ -9,9 +9,19 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include "miniweb.h"
 #include "time.h"
 
+#define ALLOW_EXIT_URL 0
+
+#ifdef ALLOW_EXIT_URL
+void page_GET_exit(struct miniweb_session *session) {
+    // Allow the user to cause a clean tidyup for valgrind testing.
+    miniweb_tidyup();
+    exit(1);
+}
+#endif
 void page_GET_index_html(struct miniweb_session *session) {
     static char *buffer[16384];
     static size_t buffer_used;
@@ -99,6 +109,9 @@ int main(int argc, char *argv[]) {
     miniweb_register_page("GET", "/favicon.ico",  page_GET_favicon_ico);
     miniweb_register_page("GET", "/README.md",    page_GET_README_md);
     miniweb_register_page("GET", "/*/index.html", page_GET_index_html);
+#ifdef ALLOW_EXIT_URL
+    miniweb_register_page("GET", "/exit",         page_GET_exit);
+#endif
 
     // Start the web server
     while(1) {
