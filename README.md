@@ -1,6 +1,9 @@
 # miniweb
 A small, lightweight web server, more aimed for embedded, low memory applications.
 
+## What is it?
+It is a single C source and a header file will allow you to quicky hack up a web server.
+
 ## A minimal example
 Here's a minimal example, that serves a single document on port 8080
 ```
@@ -38,6 +41,53 @@ int main(int argc, char *argv[]) {
     return 0;
 }
 ```
+
+# Performance
+Running on a Raspberry Pi 400, it gets around 1000 HTTP/1.0 requests per second.
+
+Running on my low-end i3-3110m laptop, it can perform over 6,000 requests per second from a single core:
+```Server Software:        Miniweb/0.0.1
+Server Hostname:        localhost
+Server Port:            8080
+
+Document Path:          /index.html
+Document Length:        585 bytes
+
+Concurrency Level:      50
+Time taken for tests:   16.091 seconds
+Complete requests:      100000
+Failed requests:        0
+Total transferred:      68100000 bytes
+HTML transferred:       58500000 bytes
+Requests per second:    6214.58 [#/sec] (mean)
+Time per request:       8.046 [ms] (mean)
+Time per request:       0.161 [ms] (mean, across all concurrent requests)
+Transfer rate:          4132.94 [Kbytes/sec] received
+
+Connection Times (ms)
+              min  mean[+/-sd] median   max
+Connect:        0    0   0.1      0       3
+Processing:     1    8   1.6      7      17
+Waiting:        1    8   1.6      7      17
+Total:          3    8   1.6      7      17
+
+Percentage of the requests served within a certain time (ms)
+  50%      7
+  66%      8
+  75%      8
+  80%      8
+  90%     11
+  95%     12
+  98%     12
+  99%     12
+ 100%     17 (longest request)
+```
+
+# Licensing
+See include LICENSE file.
+
+# Want to say thanks
+If you use this in a project, consider dropping me a line to say thanks, or send my a coffee via PayPal (see email address in source)
 
 # Reference for functions and structures in miniweb.h
 
