@@ -91,7 +91,7 @@ If you use this in a project, consider dropping me a line to say thanks, or send
 
 # Reference for functions and structures in miniweb.h
 
-   struct miniweb_session;
+    struct miniweb_session;
 The opaque datatype for the session status
 
 ## Setup and configuration
@@ -99,7 +99,7 @@ The opaque datatype for the session status
     int miniweb_set_port(int portno);
 Sets the port number that the server will listen on
 
-    int miniweb_register\_page(char *method, char *url, void (*callback)(struct miniweb_session *));
+    int miniweb_register_page(char *method, char *url, void (*callback)(struct miniweb_session *));
 Adds a handler for a web page / URL. A '*' in the URL is a wildcard, and can be of of any length. 
 Note - currently the wildcard can include slashes, but this is likely to change in future.
 
