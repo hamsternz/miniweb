@@ -14,6 +14,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <fcntl.h>
 
 #include "miniweb.h"
 
@@ -22,7 +23,7 @@
 static int debug_level = MINIWEB_DEBUG_NONE;
 static int port_no = 80;
 static int listen_socket = -1;
-static int max_sessions = 50;      // Allow upto this many concurrent session (must be < 1000)
+static int max_sessions = 500;      // Allow upto this many concurrent session (must be < 1000)
 static int timeout_secs = 5;        // Close sessions after 5 secs
 static int free_timeout_secs = 15;  // Close sessions after 5 secs
 
@@ -288,12 +289,14 @@ static struct miniweb_session *session_new(int socket) {
    struct miniweb_session *session;
    if(socket == -1)
        return NULL; 
-
+  
+   // Can we reused an existing session object? 
    session = first_session;
    while(session != NULL && session->socket != -1) {
        session = session->next;
    }
 
+   // Do we need a new session object
    if(session == NULL) {
        session = malloc(sizeof(struct miniweb_session));
        if(session == NULL) {
@@ -1056,18 +1059,6 @@ int miniweb_run(int timeout_ms) {
      static time_t last_now = 0;
      time_t now = time(NULL);
 
-     // Remove and free any stale sessions at the start of the list
-     if(first_session != NULL && first_session->socket == -1) {
-         if(first_session->last_action + free_timeout_secs < now) {
-            struct miniweb_session *next = first_session->next;
-            session_empty(first_session);
-            free(first_session);
-            first_session = next;
-            session_count--;
-         }
-     }
-
-     /* Open the listen socket, if need to */
      if(listen_socket < 0 && listen_retry_time <= now) {
          listen_retry_time = now+3;
          struct sockaddr_in serv_addr;
@@ -1099,8 +1090,14 @@ int miniweb_run(int timeout_ms) {
          if(debug_level >= MINIWEB_DEBUG_ALL) {
             fprintf(stderr, "Listening socket opened\n");
          }
-
-         if(listen(listen_socket,50) == -1 ) {
+         int fileflags;
+         if((fileflags = fcntl(listen_socket, F_GETFL, 0)) == -1) {
+             perror("fcntl F_GETFL");
+         }
+         if((fcntl(listen_socket, F_SETFL, fileflags | O_NONBLOCK)) == -1) {
+             perror("fcntl F_SETFL, O_NONBLOCK");
+         }
+         if(listen(listen_socket,100) == -1 ) {
              close(listen_socket);
              listen_socket = -1;
              miniweb_log_error(MINIWEB_ERR_LISTEN);
@@ -1121,6 +1118,17 @@ int miniweb_run(int timeout_ms) {
          max_fd = listen_socket+1;
      }
 
+     // Remove the head of the list, if it is stale
+     if(first_session != NULL) {
+         if(first_session->last_action + free_timeout_secs < now) {
+             struct miniweb_session *next = first_session->next;
+             session_empty(first_session);
+             free(first_session);
+             session_count--;
+             first_session = next;
+         }
+     }
+
      struct miniweb_session *s = first_session;
      while(s != NULL) {
          if(s->socket >= 0) {
@@ -1130,6 +1138,17 @@ int miniweb_run(int timeout_ms) {
              if(max_fd < s->socket+1) 
                 max_fd = s->socket+1;
          }
+         // Remove and free any stale sessions at the end of the list
+         if(s->next != NULL && s->next->next == NULL) {
+             struct miniweb_session *tail = s->next;
+             if(tail->last_action + free_timeout_secs < now) {
+                session_empty(tail);
+                free(tail);
+                session_count--;
+                s->next = NULL;
+             }
+         }
+
          s = s->next;
      } 
      tv.tv_sec  = (timeout_ms/1000);

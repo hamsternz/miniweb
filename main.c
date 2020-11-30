@@ -115,7 +115,7 @@ int main(int argc, char *argv[]) {
 
     // Start the web server
     while(1) {
-        miniweb_run(1000);
+        miniweb_run(250);
         time_t now = time(NULL);
         if(now > stats_time) {
            miniweb_stats();
