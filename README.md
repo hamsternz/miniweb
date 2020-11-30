@@ -100,9 +100,10 @@ The second parameter, text, can be NULL.
     char *miniweb_error_text(int error);
 Convert an internal error number into a text description.
 
-#TODO list
+# TODO list
 * Add client IP address to the logging callback.
 * Make the output of the response non-blocking.
 * Add support to query GET variables.
+* Add support to POST data .
 * Add support for basic authentication.
 * Add TLS support for https.
