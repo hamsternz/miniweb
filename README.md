@@ -2,7 +2,7 @@
 A small, lightweight web server, more aimed for embedded, low memory applications.
 
 ## What is it?
-It is a single C source and a header file will allow you to quicky hack up a web server.
+It is a single C source and a header file will allow you to quickly hack up a web server.
 
 ## A minimal example
 Here's a minimal example, that serves a single document on port 8080
@@ -127,7 +127,7 @@ Returns a pointer to any wildcard that was in the URL.
 ## Processing / admin functions
 
     int miniweb_run(int timeout_ms);
-Run the web server for at most timout\_ms. Note: It may run longer than timeout\_ms if a page handler blocks.
+Run the web server for at most timeout\_ms. Note: It may run longer than timeout\_ms if a page handler blocks.
 
     void miniweb_stats(void);
 Prints out a table of registered URLs, the number of calls, and the total time processing the request.
