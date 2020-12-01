@@ -468,7 +468,12 @@ static void session_empty(struct miniweb_session *session) {
        free(session->wildcard);
        session->wildcard = NULL;
     }
-
+   
+    if(session->header_data != NULL) {
+        free(session->header_data);
+        session->header_data = NULL;
+    }
+    session->header_data_size = 0;
     // Stop using shared data
     session->shared_data = NULL;
     session->shared_data_size = 0;
@@ -874,7 +879,6 @@ static void write_more_headers(struct miniweb_session *s) {
                     case EINTR:
                        break;
                     case EWOULDBLOCK:
-printf("WouldBlock\n");
                        return; // Go away and come back later
                     default: 
                        miniweb_log_error(MINIWEB_ERR_WRITE);
@@ -909,7 +913,6 @@ static void write_more_data(struct miniweb_session *s) {
                     case EINTR:
                        break;
                     case EWOULDBLOCK:
-printf("WouldBlock\n");
                        return; // Go away and come back later
                     default: 
                        miniweb_log_error(MINIWEB_ERR_WRITE);
@@ -941,7 +944,6 @@ static void write_more_shared_data(struct miniweb_session *s) {
                     case EINTR:
                        break;
                     case EWOULDBLOCK:
-printf("WouldBlock\n");
                        return; // Go away and come back later
                     default: 
                        miniweb_log_error(MINIWEB_ERR_WRITE);

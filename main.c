@@ -22,24 +22,37 @@ void page_GET_exit(struct miniweb_session *session) {
     exit(1);
 }
 #endif
-void page_GET_index_html(struct miniweb_session *session) {
-    // TODO: Correctly size for document
-    static char *buffer[1024*1024];
-    static size_t buffer_used;
 
-    if(buffer_used == 0) { 
+static char *index_html_buffer;
+static size_t index_html_size;
+
+void page_GET_index_html(struct miniweb_session *session) {
+    if(index_html_buffer == NULL) { 
         FILE *f = fopen("index.html","rb");
         if(f == NULL) {
             miniweb_response(session, 404);
             miniweb_write(session, "File not found\n",15);
         } else {
-            buffer_used  = fread(buffer,1,sizeof(buffer),f);
+            // Work out how big the file is, and read it into the buffer
+            fseek(f, 0,SEEK_END);
+            size_t file_size = ftell(f);
+            fseek(f, 0,SEEK_SET);
+            // Still malloc something for a zero-length file
+            if(file_size == 0) 
+               file_size++;
+printf("Allocate file\n");
+            index_html_buffer = malloc(file_size);
+            if(index_html_buffer == NULL) {
+                miniweb_response(session, 404);
+                miniweb_write(session, "Out of memory\n",14);
+            } else {
+                index_html_size  = fread(index_html_buffer,1,file_size,f);
+            }
             fclose(f);
         }
     }
     miniweb_response(session, 200);
-    miniweb_shared_data_buffer(session, buffer, buffer_used);
-//    miniweb_write(session, buffer, buffer_used);
+    miniweb_shared_data_buffer(session, index_html_buffer, index_html_size);
 }
 
 void page_GET_favicon_ico(struct miniweb_session *session) {
@@ -121,8 +134,11 @@ int main(int argc, char *argv[]) {
         time_t now = time(NULL);
         if(now > stats_time) {
            miniweb_stats();
-           stats_time = now + 120;
+           stats_time = now + 10;
         }
     }
     miniweb_tidyup();
+    if(index_html_buffer) {
+        free(index_html_buffer);
+    }
 }
