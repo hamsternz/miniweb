@@ -52,15 +52,19 @@ struct reply_header {
 void (*log_callback)(char *url, int response_code, unsigned ms_taken);
 void (*error_callback)(int error, char *message);
 
-enum parser_state { p_method, p_url,   p_protocol, p_lf, 
-                    p_start_header, p_header, p_header_sp, p_value,
-                    p_end_lf,
-                    p_error};
+enum parser_state_e { p_method, p_url,   p_protocol, p_lf, 
+                      p_start_header, p_header, p_header_sp, p_value,
+                      p_end_lf,
+                      p_error};
+enum io_state_e { io_reading, io_writing_headers, io_writing_data, io_writing_shared_data};
+
 
 // The https session state
 struct miniweb_session {
    struct miniweb_session *next;
-   enum parser_state state;
+   enum parser_state_e parser_state;
+   enum io_state_e     io_state;
+
    int socket;
    int response_code;
    struct url_reg *url;
@@ -78,10 +82,15 @@ struct miniweb_session {
    int  in_buffer_used;
 
    // For buffering the data before sending
-   char *data;
+   char   *header_data;
+   size_t header_data_size;
+   char   *data;
    size_t data_size;
    size_t data_used;
-   char last_line_term;
+   char   *shared_data; 
+   size_t shared_data_size;
+   char   last_line_term;
+   size_t write_pointer;
 
    // Details of the request
    char *method;
@@ -199,6 +208,7 @@ char *miniweb_error_text(int error) {
     case MINIWEB_ERR_CLOSE:    return "close() error";
     case MINIWEB_ERR_HDRTOBIG: return "header too big";
     case MINIWEB_ERR_SELECT:   return "select() too big";
+    case MINIWEB_ERR_WRITE:    return "write() too big";
     default:                   return "Unknown error";
   }
 }
@@ -307,7 +317,8 @@ static struct miniweb_session *session_new(int socket) {
        first_session = session;
        session_count++;
    }
-   session->state = p_method;
+   session->io_state     = io_reading;
+   session->parser_state = p_method;
    session->current_header = NULL;
    session->socket = socket;
    session->response_code = 500;
@@ -318,6 +329,9 @@ static struct miniweb_session *session_new(int socket) {
    session->data = NULL;
    session->data_size = 0;
    session->data_used = 0;
+   session->shared_data = NULL;
+   session->shared_data_size = 0;
+   session->write_pointer = 0;
 
    session->in_buffer = NULL;
    session->in_buffer_size = 0;
@@ -368,30 +382,6 @@ static int session_request_header_add(struct miniweb_session *session,char *head
     rh->next = session->first_request_header;
     session->first_request_header = rh;
 
-    return 1;
-}
-
-/****************************************************************************************/
-static int safewrite(int socket, char *data, int len) {
-    if(socket == -1) {
-       return 0;
-    }
-    while(len > 0) {
-        int n = write(socket, data, len);
-        if(n >= 0) {
-            len  -= n;
-            data += n;
-        } else if(n == -1) {
-            switch(errno) {
-                case EAGAIN:
-                   break;
-                case EINTR:
-                   break;
-                default: 
-                   return 0;
-            }
-        }
-    }
     return 1;
 }
 
@@ -461,7 +451,7 @@ static int session_find_target_url(struct miniweb_session *session) {
 /****************************************************************************************/
 static void session_empty(struct miniweb_session *session) {
     // Clean up method, full_url and protocol
-    session->state = p_method;
+    session->parser_state = p_method;
     if(session->method) {
        free(session->method);
        session->method = NULL;
@@ -478,6 +468,10 @@ static void session_empty(struct miniweb_session *session) {
        free(session->wildcard);
        session->wildcard = NULL;
     }
+
+    // Stop using shared data
+    session->shared_data = NULL;
+    session->shared_data_size = 0;
 
     // Clean up reply data
     if(session->data) {
@@ -528,6 +522,47 @@ static void session_end(struct miniweb_session *session) {
 }
 
 /****************************************************************************************/
+static void build_header_data(struct miniweb_session *s) {
+    //TODO: This is really bad code - esp the malloc.
+
+    // Send HTTP response code
+    int i;
+    s->header_data = malloc(16384);
+    if(s->header_data == NULL) {
+        miniweb_log_error(MINIWEB_ERR_NOMEM);
+        session_end(s);
+        return;
+    }
+ 
+    s->header_data[0] = '\0';
+    for(i = 0; resp_codes[i].number != -1; i++) {
+        if(resp_codes[i].number == s->response_code) {
+           strcat(s->header_data, s->protocol);
+           strcat(s->header_data, resp_codes[i].text);
+           break;
+        }
+    }
+    if(i == sizeof(resp_codes)/sizeof(struct resp_code)) {
+       strcat(s->header_data, s->protocol);
+       char r_str[100];
+       sprintf(r_str, " %i Unknown\r\n", s->response_code); 
+       strcat(s->header_data, r_str);
+    }
+
+    struct reply_header *rh = s->first_reply_header;
+    while(rh != NULL) {
+        strcat(s->header_data, rh->header);
+        strcat(s->header_data, ": ");
+        strcat(s->header_data, rh->value);
+        strcat(s->header_data, "\r\n");
+        rh = rh->next;
+    }
+    strcat(s->header_data, "\r\n");
+    s->header_data_size = strlen(s->header_data);
+    s->write_pointer = 0;
+}
+
+/****************************************************************************************/
 static void session_send_reply(struct miniweb_session *session) {
     // Set the default headers (can be overwritten)
     miniweb_add_header(session, "Server","Miniweb/0.0.1 (Linux)");
@@ -553,40 +588,11 @@ static void session_send_reply(struct miniweb_session *session) {
 
     // Add the content length header - overwrite any already queued to send
     char buffer[11];
-    sprintf(buffer,"%zi",session->data_used);
+    sprintf(buffer,"%zi",session->data_used + session->shared_data_size);
     miniweb_add_header(session, "Content-Length",buffer);
 
-    // Send HTTP response code
-    int i;
-    for(i = 0; resp_codes[i].number != -1; i++) {
-        if(resp_codes[i].number == session->response_code) {
-           safewrite(session->socket, session->protocol, strlen(session->protocol));
-           safewrite(session->socket, resp_codes[i].text, strlen(resp_codes[i].text));
-           break;
-        }
-    }
-    if(i == sizeof(resp_codes)/sizeof(struct resp_code)) {
-       safewrite(session->socket, session->protocol, strlen(session->protocol));
-       char r_str[100];
-       sprintf(r_str, " %i Unknown\r\n", session->response_code); 
-       safewrite(session->socket, r_str, strlen(r_str));
-    }
-
-    // Send headers
-    struct reply_header *rh = session->first_reply_header;
-    while(rh != NULL) {
-        safewrite(session->socket, rh->header, strlen(rh->header));
-        safewrite(session->socket, ": ",       2);
-        safewrite(session->socket, rh->value,  strlen(rh->value));
-        safewrite(session->socket, "\r\n",     2);
-        rh = rh->next;
-    }
-    safewrite(session->socket, "\r\n",     2);
-
-    // Send body 
-    if(session->data)
-        safewrite(session->socket, session->data,session->data_used);
-    session_update_metrics(session);
+    build_header_data(session);
+    session->io_state = io_writing_headers;
 }
 
 /****************************************************************************************/
@@ -613,7 +619,7 @@ int miniweb_register_page(char *method, char *url, void (*callback)(struct miniw
      if(url[start] == '*')
         break;
    }
-   // TODO Split URL
+
    new_url->pattern_start = malloc(start+1);
    if(new_url->pattern_start == NULL) {
       free(new_url->method);
@@ -651,6 +657,13 @@ int miniweb_register_page(char *method, char *url, void (*callback)(struct miniw
    new_url->next = first_url_reg;
    first_url_reg = new_url;
    return 1;
+}
+/****************************************************************************************/
+size_t miniweb_shared_data_buffer(struct miniweb_session *session, void *data, size_t len) {
+    // Overwrite any existing shared data with this one
+    session->shared_data      = data;
+    session->shared_data_size = len;
+    return len;
 }
 
 /****************************************************************************************/
@@ -720,7 +733,6 @@ int miniweb_add_header(struct miniweb_session *session, char *header, char *valu
         rh = rh->next;
     }
 
-    // TODO - look for duplicate headers and drop old one 
     // Allocate the structure
     rh = malloc(sizeof(struct reply_header));
     if(rh == NULL) {
@@ -851,6 +863,103 @@ void miniweb_stats(void) {
 }
 
 /****************************************************************************************/
+static void write_more_headers(struct miniweb_session *s) {
+    if(s->header_data) {
+        while(s->write_pointer != s->header_data_size) {
+            int n = write(s->socket, s->header_data+s->write_pointer, s->header_data_size-s->write_pointer);
+            if(n >= 0) {
+                s->write_pointer += n;
+            } else if(n == -1) {
+                switch(errno) {
+                    case EINTR:
+                       break;
+                    case EWOULDBLOCK:
+printf("WouldBlock\n");
+                       return; // Go away and come back later
+                    default: 
+                       miniweb_log_error(MINIWEB_ERR_WRITE);
+                       return; // Go away and come back later
+                }
+            }
+        }
+    }
+    s->write_pointer = 0;
+    if(s->data != NULL) {
+        s->io_state = io_writing_data;   
+    } else  if(s->shared_data != NULL) {
+        s->io_state = io_writing_shared_data;   
+    } else {
+        // Close older 1.0 (non-persistent) connections
+        if(strcmp(s->protocol, "HTTP/1.1") != 0)
+            session_end(s);
+        else
+            s->io_state = io_reading;   
+    }
+}
+
+/****************************************************************************************/
+static void write_more_data(struct miniweb_session *s) {
+    if(s->data) {
+        while(s->write_pointer != s->data_size) {
+            int n = write(s->socket, s->data+s->write_pointer, s->data_size-s->write_pointer);
+            if(n >= 0) {
+                s->write_pointer += n;
+            } else if(n == -1) {
+                switch(errno) {
+                    case EINTR:
+                       break;
+                    case EWOULDBLOCK:
+printf("WouldBlock\n");
+                       return; // Go away and come back later
+                    default: 
+                       miniweb_log_error(MINIWEB_ERR_WRITE);
+                       return; // Go away and come back later
+                }
+            }
+        }
+    }
+    s->write_pointer = 0;
+    if(s->shared_data != NULL) {
+        s->io_state = io_writing_shared_data;   
+    } else {
+        // Close older 1.0 (non-persistent) connections
+        if(strcmp(s->protocol, "HTTP/1.1") != 0)
+            session_end(s);
+        else
+            s->io_state = io_reading;   
+    }
+}
+/****************************************************************************************/
+static void write_more_shared_data(struct miniweb_session *s) {
+    if(s->shared_data) {
+        while(s->write_pointer != s->shared_data_size) {
+            int n = write(s->socket, s->shared_data+s->write_pointer, s->shared_data_size-s->write_pointer);
+            if(n >= 0) {
+                s->write_pointer += n;
+            } else if(n == -1) {
+                switch(errno) {
+                    case EINTR:
+                       break;
+                    case EWOULDBLOCK:
+printf("WouldBlock\n");
+                       return; // Go away and come back later
+                    default: 
+                       miniweb_log_error(MINIWEB_ERR_WRITE);
+                       return; // Go away and come back later
+                }
+            }
+        }
+    }
+
+    session_update_metrics(s);
+    s->write_pointer = 0;
+    // Close older 1.0 (non-persistent) connections
+    if(strcmp(s->protocol, "HTTP/1.1") != 0)
+        session_end(s);
+    else
+        s->io_state = io_reading;   
+}
+/****************************************************************************************/
 static int session_read(struct miniweb_session *session) {
     int n;
     if(session->socket == -1) 
@@ -896,7 +1005,7 @@ static int session_read(struct miniweb_session *session) {
     while(scan_pos != session->in_buffer_used) {
         int c = session->in_buffer[scan_pos];
         scan_pos++;
-        switch(session->state) {
+        switch(session->parser_state) {
             case p_method:
                 if(DEBUG_FSM) debug_fsm(scan_pos-1,c,"p_method");
                 // Start recording transaction time from now
@@ -906,15 +1015,15 @@ static int session_read(struct miniweb_session *session) {
                     int len = scan_pos-consumed-1;
                     session->method = malloc(len+1);
                     if(session->method == NULL) {
-                        session->state = p_error;
+                        session->parser_state = p_error;
                     } else {
                         memcpy(session->method, session->in_buffer+consumed, len);
                         session->method[len] = '\0';
                         consumed = scan_pos;
-                        session->state = p_url;
+                        session->parser_state = p_url;
                     }
                 } else if(!isMethodChar(c)) {
-                    session->state = p_error;
+                    session->parser_state = p_error;
                 }
                 break;
             case p_url:
@@ -923,52 +1032,51 @@ static int session_read(struct miniweb_session *session) {
                    int len = scan_pos-consumed-1;
                    session->full_url = malloc(len+1);
                    if(session->full_url == NULL) {
-                       session->state = p_error;
+                       session->parser_state = p_error;
                    } else {
                        memcpy(session->full_url, session->in_buffer+consumed, len);
                        session->full_url[len] = '\0';
                        consumed = scan_pos;
-                       session->state = p_protocol;
+                       session->parser_state = p_protocol;
                    }
                 } else if(!isUrlChar(c)) {
-                   session->state = p_error;
+                   session->parser_state = p_error;
                 }
                 break;
             case p_protocol:
                 if(DEBUG_FSM) debug_fsm(scan_pos-1, c,"p_protocol");
                 if(c == '\r') {
-                   // TODO grab field
                    int len = scan_pos-consumed-1;
                    session->protocol = malloc(len+1);
                    if(session->protocol == NULL) {
-                       session->state = p_error;
+                       session->parser_state = p_error;
                    } else {
                        memcpy(session->protocol, session->in_buffer+consumed, len);
                        session->protocol[len] = '\0';
                        consumed = scan_pos;
-                       session->state = p_lf;
+                       session->parser_state = p_lf;
                    }
                 } else if(!isProtocolChar(c)) {
-                   session->state = p_error;
+                   session->parser_state = p_error;
                 }
                 break;
             case p_lf:
                 if(DEBUG_FSM) debug_fsm(scan_pos-1, c,"p_lf");
                 if(c == '\n') {
                    consumed = scan_pos;
-                   session->state = p_start_header;
+                   session->parser_state = p_start_header;
                 } else {
-                   session->state = p_error;
+                   session->parser_state = p_error;
                 }
                 break;
             case p_start_header:
                 if(DEBUG_FSM) debug_fsm(scan_pos-1, c,"p_start_header");
                 if(c == '\r') {
-                   session->state = p_end_lf;
+                   session->parser_state = p_end_lf;
                 } else if(!isHeaderChar(c)) {
-                   session->state = p_error;
+                   session->parser_state = p_error;
                 } else {
-                   session->state = p_header;
+                   session->parser_state = p_header;
                 }
                 break;
             case p_header:
@@ -977,38 +1085,37 @@ static int session_read(struct miniweb_session *session) {
                    // See if the header is one we are listening to
                    session->current_header = header_find(session->in_buffer+consumed, scan_pos-1-consumed);
                    consumed = scan_pos;
-                   session->state = p_header_sp;
+                   session->parser_state = p_header_sp;
                 } else if(!isHeaderChar(c)) {
-                   session->state = p_error;
+                   session->parser_state = p_error;
                 }
                 break;
             case p_header_sp:
                 if(DEBUG_FSM) debug_fsm(scan_pos-1, c,"p_header_sp");
                 if(c == ' ') {
                    consumed = scan_pos;
-                   session->state = p_value;
+                   session->parser_state = p_value;
                 } else {
-                   session->state = p_error;
+                   session->parser_state = p_error;
                 }
                 break;
             case p_value:
                 if(DEBUG_FSM) debug_fsm(scan_pos-1, c,"p_value");
                 if(c == '\r') {
-                   // TODO grab field
                    if(session->current_header) {
                        int t = session->in_buffer[scan_pos-1];
                        session->in_buffer[scan_pos-1] = '\0';
                        char *v = session->in_buffer+consumed;
                        if(!session_request_header_add(session, session->current_header->header, v)) {
-                          session->state = p_error;
+                          session->parser_state = p_error;
                        }
                        session->in_buffer[scan_pos-1] = t;
                    }
                    consumed = scan_pos;
-                   session->state = p_lf;
+                   session->parser_state = p_lf;
                    session->current_header = NULL;
                 } else if(!isValueChar(c)) {
-                   session->state = p_error;
+                   session->parser_state = p_error;
                    session->current_header = NULL;
                 }
                 break;
@@ -1019,15 +1126,13 @@ static int session_read(struct miniweb_session *session) {
                         printf("Ready to run a query\n"); 
 
                     consumed = scan_pos;
-                    session->state = p_method;
+                    session->parser_state = p_method;
                     // Exec request
                     session_find_target_url(session);
                     session_send_reply(session); 
-                    // Close older 1.0 (non-persistent) connections
-                    if(strcmp(session->protocol, "HTTP/1.1") != 0)
-                       session_end(session);
+                      
                 } else {
-                    session->state = p_error;
+                    session->parser_state = p_error;
                 }
                 break;
             case p_error:
@@ -1132,9 +1237,16 @@ int miniweb_run(int timeout_ms) {
      struct miniweb_session *s = first_session;
      while(s != NULL) {
          if(s->socket >= 0) {
-             FD_SET(s->socket, &rfds);
-             FD_SET(s->socket, &wfds);
-             FD_SET(s->socket, &efds);
+             switch(s->io_state) { 
+                 case io_reading:
+                    FD_SET(s->socket, &rfds);
+                    break;
+                 case io_writing_headers:
+                 case io_writing_data:
+                 case io_writing_shared_data:
+                    FD_SET(s->socket, &wfds);
+                    break;
+             };
              if(max_fd < s->socket+1) 
                 max_fd = s->socket+1;
          }
@@ -1173,6 +1285,19 @@ int miniweb_run(int timeout_ms) {
             s->last_action = now;
          }
          if(s->socket >= 0 && FD_ISSET(s->socket, &wfds)) {
+             switch(s->io_state) { 
+                 case io_reading:
+                    break; 
+                 case io_writing_headers:
+                    write_more_headers(s);
+                    break;
+                 case io_writing_data:
+                    write_more_data(s);
+                    break;
+                 case io_writing_shared_data:
+                    write_more_shared_data(s);
+                    break;
+             };
          }
          if(s->socket >= 0 && FD_ISSET(s->socket, &efds)) {
             session_end(s);
@@ -1209,6 +1334,13 @@ int miniweb_run(int timeout_ms) {
          }
          if(debug_level >= MINIWEB_DEBUG_ALL) {
              fprintf(stderr, "SOCKET ACCPTED\n");
+         }
+         int fileflags;
+         if((fileflags = fcntl(newsockfd, F_GETFL, 0)) == -1) {
+             perror("fcntl F_GETFL");
+         }
+         if((fcntl(newsockfd, F_SETFL, fileflags | O_NONBLOCK)) == -1) {
+             perror("fcntl F_SETFL, O_NONBLOCK");
          }
          
          struct miniweb_session *session = session_new(newsockfd);

@@ -23,7 +23,8 @@ void page_GET_exit(struct miniweb_session *session) {
 }
 #endif
 void page_GET_index_html(struct miniweb_session *session) {
-    static char *buffer[16384];
+    // TODO: Correctly size for document
+    static char *buffer[1024*1024];
     static size_t buffer_used;
 
     if(buffer_used == 0) { 
@@ -37,7 +38,8 @@ void page_GET_index_html(struct miniweb_session *session) {
         }
     }
     miniweb_response(session, 200);
-    miniweb_write(session, buffer, buffer_used);
+    miniweb_shared_data_buffer(session, buffer, buffer_used);
+//    miniweb_write(session, buffer, buffer_used);
 }
 
 void page_GET_favicon_ico(struct miniweb_session *session) {
@@ -115,11 +117,11 @@ int main(int argc, char *argv[]) {
 
     // Start the web server
     while(1) {
-        miniweb_run(250);
+        miniweb_run(4000);
         time_t now = time(NULL);
         if(now > stats_time) {
            miniweb_stats();
-           stats_time = now + 10;
+           stats_time = now + 120;
         }
     }
     miniweb_tidyup();

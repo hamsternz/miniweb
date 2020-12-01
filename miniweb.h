@@ -10,6 +10,7 @@
 #define MINIWEB_ERR_CLOSE    (-6)
 #define MINIWEB_ERR_HDRTOBIG (-7)
 #define MINIWEB_ERR_SELECT   (-8)
+#define MINIWEB_ERR_WRITE    (-9)
 
 /* Debug level settings */
 #define MINIWEB_DEBUG_NONE   (0)
@@ -29,6 +30,7 @@ int miniweb_listen_header(char *header);
 char *miniweb_get_header(struct miniweb_session *session, char *header);
 int miniweb_add_header(struct miniweb_session *session, char *header, char *value);
 size_t miniweb_write(struct miniweb_session *session, void *data, size_t len);
+size_t miniweb_shared_data_buffer(struct miniweb_session *session, void *data, size_t len);
 int miniweb_response(struct miniweb_session *session, int response);
 char *miniweb_get_wildcard(struct miniweb_session *session);
 
