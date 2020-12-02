@@ -16,6 +16,8 @@ void page_GET_index_html(struct miniweb_session *session) {
 }
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     // Change the port number from the default
     miniweb_set_port(8080);
 

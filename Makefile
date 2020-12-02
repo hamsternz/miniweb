@@ -1,4 +1,4 @@
-COPTS= -Wall -pedantic -O4 
+COPTS= -Wall -pedantic -O4 -Wextra
 
 all : miniweb minimal
 

@@ -17,6 +17,7 @@
 
 #ifdef ALLOW_EXIT_URL
 void page_GET_exit(struct miniweb_session *session) {
+    (void)session;
     // Allow the user to cause a clean tidyup for valgrind testing.
     miniweb_tidyup();
     exit(1);
@@ -93,7 +94,13 @@ void page_GET_README_md(struct miniweb_session *session) {
 }
 
 void write_log(char *url, int response_code, unsigned us_taken) {
-//    printf("Page access: %s %i %i.%06i\n", url, response_code, us_taken/1000000, us_taken%1000000);
+#if 0
+    printf("Page access: %s %i %i.%06i\n", url, response_code, us_taken/1000000, us_taken%1000000);
+#else 
+    (void)url;
+    (void)response_code;
+    (void)us_taken;
+#endif
 }
 
 void show_error(int error, char *message) {
@@ -104,6 +111,8 @@ void show_error(int error, char *message) {
 }
 
 int main(int argc, char *argv[]) {
+    (void)argc;
+    (void)argv;
     time_t stats_time = 0; 
     // Change the port number from the default
     miniweb_set_port(8080);

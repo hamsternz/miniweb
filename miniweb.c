@@ -225,7 +225,7 @@ static int miniweb_log_error(int error_code) {
 }
 
 /****************************************************************************************/
-static struct listen_header *header_find(char *data, int len) {
+static struct listen_header *header_find(char *data, size_t len) {
     struct listen_header *lh = first_listen_header;
     while(lh != NULL) {
        if(lh->len == len) {
@@ -236,7 +236,7 @@ static struct listen_header *header_find(char *data, int len) {
     }
     if(debug_level >= MINIWEB_DEBUG_ALL) {
         printf("Not listening for '");
-        for(int i = 0; i < len; i++) {
+        for(size_t i = 0; i < len; i++) {
             putchar(data[i]);
         }
         putchar('\'');
@@ -388,7 +388,7 @@ static int session_request_header_add(struct miniweb_session *session,char *head
 /****************************************************************************************/
 static int check_url_match(struct miniweb_session *session, struct url_reg *ur) {
     // Find the ? that starts the get vars
-    int url_end, len = strlen(session->full_url);
+    size_t url_end, len = strlen(session->full_url);
     for(url_end = 0; url_end < len; url_end++) {
         if(session->full_url[url_end] == '?')
             break;
@@ -678,7 +678,7 @@ size_t miniweb_write(struct miniweb_session *session, void *data, size_t len) {
 
     if(session->data == NULL) {
         // Create new data buffer if one isn't there
-        int buff_size = 0;
+        size_t buff_size = 0;
         if(session->url) {
             if(session->url->request_count_metric > 0) {
                 buff_size = session->url->data_sent_metric/session->url->request_count_metric+64;
@@ -688,7 +688,7 @@ size_t miniweb_write(struct miniweb_session *session, void *data, size_t len) {
         if(buff_size < len) buff_size = len;
 
         if(debug_level >= MINIWEB_DEBUG_ALL) {
-            fprintf(stderr,"Allocating %i for data\n",buff_size);
+            fprintf(stderr,"Allocating %zi for data\n",buff_size);
         }
         session->data = malloc(buff_size);
         if(session->data == NULL) {
