@@ -326,6 +326,8 @@ static struct miniweb_session *session_new(int socket) {
    session->first_request_header = NULL;
    session->first_reply_header = NULL;
 
+   session->header_data = NULL;
+   session->header_data_size = 0;
    session->data = NULL;
    session->data_size = 0;
    session->data_used = 0;
@@ -528,33 +530,56 @@ static void session_end(struct miniweb_session *session) {
 
 /****************************************************************************************/
 static void build_header_data(struct miniweb_session *s) {
+    struct reply_header *rh;
+    int rc_index;
+    char rc_str[100];
+    size_t header_len;
     //TODO: This is really bad code - esp the malloc.
 
     // Send HTTP response code
-    int i;
-    s->header_data = malloc(16384);
+ 
+    for(rc_index = sizeof(resp_codes)/sizeof(struct resp_code)-1; rc_index > 0;  rc_index--) {
+        if(resp_codes[rc_index].number == s->response_code) {
+           break;
+        }
+    }
+    header_len = strlen(s->protocol);
+    if(rc_index < 0) {
+       sprintf(rc_str, " %i Unknown\r\n", s->response_code); 
+       header_len += strlen(rc_str);
+    } else {
+       header_len += strlen(resp_codes[rc_index].text);
+    }
+
+    rh = s->first_reply_header;
+    while(rh != NULL) {
+        header_len += strlen(rh->header);
+        header_len += 2;
+        header_len += strlen(rh->value);
+        header_len += 2;
+        rh = rh->next;
+    }
+    header_len += 2;
+    header_len += 1; // For the termating null
+
+    // Allocate the space
+    s->header_data = malloc(header_len);
     if(s->header_data == NULL) {
         miniweb_log_error(MINIWEB_ERR_NOMEM);
         session_end(s);
         return;
     }
- 
     s->header_data[0] = '\0';
-    for(i = 0; resp_codes[i].number != -1; i++) {
-        if(resp_codes[i].number == s->response_code) {
-           strcat(s->header_data, s->protocol);
-           strcat(s->header_data, resp_codes[i].text);
-           break;
-        }
-    }
-    if(i == sizeof(resp_codes)/sizeof(struct resp_code)) {
-       strcat(s->header_data, s->protocol);
-       char r_str[100];
-       sprintf(r_str, " %i Unknown\r\n", s->response_code); 
-       strcat(s->header_data, r_str);
+
+    // Now assemble the headers
+    strcpy(s->header_data, s->protocol);
+    if(rc_index < 0) {
+       strcat(s->header_data, rc_str);
+    } else {
+       strcat(s->header_data, resp_codes[rc_index].text);
     }
 
-    struct reply_header *rh = s->first_reply_header;
+    rh = s->first_reply_header;
     while(rh != NULL) {
         strcat(s->header_data, rh->header);
         strcat(s->header_data, ": ");

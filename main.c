@@ -13,6 +13,9 @@
 #include "miniweb.h"
 #include "time.h"
 
+static char *index_html_buffer;
+static size_t index_html_size;
+
 #define ALLOW_EXIT_URL 0
 
 #ifdef ALLOW_EXIT_URL
@@ -20,12 +23,11 @@ void page_GET_exit(struct miniweb_session *session) {
     (void)session;
     // Allow the user to cause a clean tidyup for valgrind testing.
     miniweb_tidyup();
+    if(index_html_buffer)
+        free(index_html_buffer);
     exit(1);
 }
 #endif
-
-static char *index_html_buffer;
-static size_t index_html_size;
 
 void page_GET_index_html(struct miniweb_session *session) {
     if(index_html_buffer == NULL) { 
