@@ -5,6 +5,7 @@
 // (c) 2020 Mike Field <hamster@snap.net.nz>
 //////////////////////////////////////////////////////////////
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <malloc.h>
 #include <time.h>
@@ -97,6 +98,9 @@ struct miniweb_session {
    char *full_url;
    char *protocol;
    char *wildcard;
+
+   char *content;
+   int  content_length;
 };
 static struct miniweb_session *first_session;
 static int session_count;
@@ -344,6 +348,10 @@ static struct miniweb_session *session_new(int socket) {
    session->protocol = NULL;
    session->full_url = NULL;
    session->wildcard = NULL;
+ 
+   session->content_length = -1;
+   session->content = NULL;
+
    return session;
 }
 
@@ -452,6 +460,13 @@ static int session_find_target_url(struct miniweb_session *session) {
 
 /****************************************************************************************/
 static void session_empty(struct miniweb_session *session) {
+    // Clean up any POST content
+    session->content_length = -1;
+    if(session->content) {
+       free(session->content);
+       session->content = NULL;
+    }
+
     // Clean up method, full_url and protocol
     session->parser_state = p_method;
     if(session->method) {
@@ -629,6 +644,14 @@ static void session_send_reply(struct miniweb_session *session) {
 int miniweb_register_page(char *method, char *url, void (*callback)(struct miniweb_session *)) {
    struct url_reg *new_url;
    int url_len = strlen(url);
+
+   // We need the Content-Length header to process POST commands
+   if(strcmp(method,"POST")==0) {
+      if(miniweb_listen_header("Content-Length")) {
+         return 0;
+      }
+   }
+
    // Allocate new
    new_url = malloc(sizeof(struct url_reg));
    if(new_url == NULL) {
@@ -813,11 +836,41 @@ char *miniweb_get_header(struct miniweb_session *session, char *header) {
 }
 
 /****************************************************************************************/
+int miniweb_content_length(struct miniweb_session *session) {
+   if(session->content_length == -1) {
+      char *length_string = miniweb_get_header(session, "Content-Length");
+      if(length_string == NULL) {
+         fprintf(stderr, "No content length header\n");
+      } else {
+         session->content_length = atoi(length_string);
+         if(session->content_length < 0) {
+           fprintf(stderr, "Negative content length mapped to zero");
+           session->content_length = 0;
+         }
+      }
+   }
+   return session->content_length;
+}
+
+/****************************************************************************************/
+char *miniweb_content(struct miniweb_session *session) {
+   return session->content;
+}
+/****************************************************************************************/
 int miniweb_listen_header(char *header) {
    struct listen_header *lh;
    char *h;
-   int len = strlen(header);
 
+   // First check if we already have the header in the list?
+   lh = first_listen_header;
+   while(lh != NULL) {
+      if(strcmp(header,lh->header)==0)
+          return 1;
+      lh = lh->next;
+   }
+
+   // Nope - we need to add it.
+   int len = strlen(header);
    h = malloc(len+1);
    if(h == NULL)
      return miniweb_log_error(MINIWEB_ERR_NOMEM);
