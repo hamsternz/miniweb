@@ -158,7 +158,6 @@ Convert an internal error number into a text description.
 
 # TODO list
 * Add client IP address to the logging callback.
-* Add support to query GET variables.
-* Add support to POST data .
+* Add support to query GET and POST variables.
 * Add support for basic authentication.
 * Add TLS support for https.
