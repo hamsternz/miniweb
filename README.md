@@ -124,6 +124,12 @@ Sets the HTTP response code for this session. Can be called multiple times, with
     char *miniweb_get_wildcard(struct miniweb_session *session);
 Returns a pointer to any wildcard that was in the URL.
 
+    int miniweb_content(struct miniweb_session *session);
+Returns a pointer to any POST data for the request
+
+    int miniweb_content_length(struct miniweb_session *session);
+Returns the length of any POST data for the request
+
 ## Processing / admin functions
 
     int miniweb_run(int timeout_ms);
