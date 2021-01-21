@@ -56,6 +56,7 @@ void (*error_callback)(int error, char *message);
 enum parser_state_e { p_method, p_url,   p_protocol, p_lf, 
                       p_start_header, p_header, p_header_sp, p_value,
                       p_end_lf,
+                      p_content,
                       p_error};
 enum io_state_e { io_reading, io_writing_headers, io_writing_data, io_writing_shared_data};
 
@@ -101,6 +102,7 @@ struct miniweb_session {
 
    char *content;
    int  content_length;
+   int  content_read;
 };
 static struct miniweb_session *first_session;
 static int session_count;
@@ -1079,6 +1081,7 @@ static int session_read(struct miniweb_session *session) {
         session_end(session);
         return 0;
     }
+
     int scan_pos = session->in_buffer_used;
     session->in_buffer_used += n;
     int consumed = 0;
@@ -1206,15 +1209,54 @@ static int session_read(struct miniweb_session *session) {
                         printf("Ready to run a query\n"); 
 
                     consumed = scan_pos;
-                    session->parser_state = p_method;
-                    // Exec request
-                    session_find_target_url(session);
-                    session_send_reply(session); 
-                      
+                    miniweb_content_length(session); // Pull content lenght from headers
+                    // TODO - Add limit to content lenght
+                    if(strcmp(session->method,"POST")==0 && session->content_length > 0) {
+                        session->content = malloc(session->content_length);
+                        if(session->content != NULL) {
+                           printf("Attempting to read %i of content\n", session->content_length);
+                           session->content_read = 0;
+                           session->parser_state = p_content;
+                        } else {
+                           printf("Unable to allocate content_memory\n"); 
+                           session->parser_state = p_error;
+                        }
+                    } else {
+                        session->parser_state = p_method;
+                        // Exec request
+                        session_find_target_url(session);
+                        session_send_reply(session); 
+                    }     
                 } else {
                     session->parser_state = p_error;
                 }
                 break;
+            case p_content:
+                if(DEBUG_FSM) debug_fsm(scan_pos-1, c,"p_content");
+
+                consumed = scan_pos;
+                if(consumed != session->in_buffer_used) {
+                    // Work out how much content we have left to read
+                    int data_to_copy = session->in_buffer_used-consumed;
+                    if(data_to_copy > session->content_length-session->content_read)
+                       data_to_copy = session->content_length-session->content_read;
+                    // move over what is in the buffer
+                    memcpy(session->content+session->content_read, 
+                           session->in_buffer+consumed,
+                           data_to_copy);
+                    consumed += data_to_copy;
+                    session->content_read += data_to_copy;
+                    printf("Added %i bytes of content\n", data_to_copy);
+                }
+                // If we have all the content
+                if(session->content_read == session->content_length) {
+                        session->parser_state = p_method;
+                        // Exec request
+                        session_find_target_url(session);
+                        session_send_reply(session); 
+                }     
+                break;
+
             case p_error:
                 if(DEBUG_FSM) debug_fsm(scan_pos-1, c,"p_error");
             default:
