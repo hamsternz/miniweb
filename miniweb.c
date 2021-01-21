@@ -649,7 +649,7 @@ int miniweb_register_page(char *method, char *url, void (*callback)(struct miniw
 
    // We need the Content-Length header to process POST commands
    if(strcmp(method,"POST")==0) {
-      if(miniweb_listen_header("Content-Length")) {
+      if(!miniweb_listen_header("Content-Length")) {
          return 0;
       }
    }
@@ -1212,9 +1212,8 @@ static int session_read(struct miniweb_session *session) {
                     miniweb_content_length(session); // Pull content lenght from headers
                     // TODO - Add limit to content lenght
                     if(strcmp(session->method,"POST")==0 && session->content_length > 0) {
-                        session->content = malloc(session->content_length);
+                        session->content = malloc(session->content_length+1); // Add space for a NULL
                         if(session->content != NULL) {
-                           printf("Attempting to read %i of content\n", session->content_length);
                            session->content_read = 0;
                            session->parser_state = p_content;
                         } else {
@@ -1235,6 +1234,12 @@ static int session_read(struct miniweb_session *session) {
                 if(DEBUG_FSM) debug_fsm(scan_pos-1, c,"p_content");
 
                 consumed = scan_pos;
+                // First add the chracter 'c';
+                if(consumed != session->in_buffer_used) {
+                    session->content[session->content_read] = c;
+                    session->content_read++;
+                }
+                // Now add the rest of the buffer
                 if(consumed != session->in_buffer_used) {
                     // Work out how much content we have left to read
                     int data_to_copy = session->in_buffer_used-consumed;
@@ -1246,14 +1251,15 @@ static int session_read(struct miniweb_session *session) {
                            data_to_copy);
                     consumed += data_to_copy;
                     session->content_read += data_to_copy;
-                    printf("Added %i bytes of content\n", data_to_copy);
                 }
                 // If we have all the content
                 if(session->content_read == session->content_length) {
-                        session->parser_state = p_method;
-                        // Exec request
-                        session_find_target_url(session);
-                        session_send_reply(session); 
+                    // Append a NULL to the content
+                    session->content[session->content_read] = '\0'; 
+                    session->parser_state = p_method;
+                    // Exec request
+                    session_find_target_url(session);
+                    session_send_reply(session); 
                 }     
                 break;
 

@@ -34,7 +34,7 @@ size_t miniweb_shared_data_buffer(struct miniweb_session *session, void *data, s
 int    miniweb_response(struct miniweb_session *session, int response);
 char  *miniweb_get_wildcard(struct miniweb_session *session);
 int    miniweb_content_length(struct miniweb_session *session);
-int    miniweb_content_read(struct miniweb_session *session, void *data, int len);
+char  *miniweb_content(struct miniweb_session *session);
 
 /* Process / admin */
 int   miniweb_run(int timeout_ms);
